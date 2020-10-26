@@ -64,7 +64,7 @@ hl <- hoslem.test(dev$mtopd_, dev$predmort_, g=10)
 
 # ols indirect method 
 
-###Step 2: offset the ß from step 1, and fit the logistic model to data 2016, and obtain the intercept 
+###Step 2: offset the ÃŸ from step 1, and fit the logistic model to data 2016, and obtain the intercept 
 # model covariates matrix for ranking data; 
 covar_rank<- model.matrix ( ~  age+hdef_4c+bsa4c+creatlst4c+
                               dialysis_+arrhythmia_2cat+carshock_+gender_+
@@ -148,7 +148,7 @@ plot(g)
 
 hoslem.test(dev$cppneum, fitted(model_fix))  #p-value = 0.02
 
-###Step 2. offset the ß from step 1, and fit the fixed effect model to data 2016, and obtain the intercept a_2016 and hospital effect in 2016 
+###Step 2. offset the ÃŸ from step 1, and fit the fixed effect model to data 2016, and obtain the intercept a_2016 and hospital effect in 2016 
 #### indirect standardized 
 #reference coding
 
@@ -281,7 +281,7 @@ covar_rank_dfs<- model.matrix ( ~ age+hdef_4c+bsa4c+creatlst4c+
                                   status_new+incidenc_+chf_nyh, data=dfs_rank)
 
 
-###Step 2. offset the ß from step 1, and fit the random effect model to data 2016, and obtain the intercept a_2016 and hospital random intercepts ?_2016j for hospital random effect in 2016. 
+###Step 2. offset the ÃŸ from step 1, and fit the random effect model to data 2016, and obtain the intercept a_2016 and hospital random intercepts ?_2016j for hospital random effect in 2016. 
 
 
 # estimate the hospital effect for ranking data;  
