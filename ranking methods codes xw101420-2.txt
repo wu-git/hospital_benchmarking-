@@ -1,0 +1,583 @@
+###########################################
+###### Prepare data and variables##########
+###########################################
+# read in the improve data, the variables were prepared previously on a different script.
+dat_var <- read.csv("xxx.csv" ,header=T,sep=',')
+
+# select CABG
+newdat<-  subset(dat_var,dat_var$proctype_==1)
+
+
+#format the variables for modeling, using as.factor function (skip); 
+
+
+# split the data into model development data and ranking data; 
+dev <- subset (newdat, newdat$surgyr_ ==4|newdat$surgyr_ ==5|newdat$surgyr_ ==6)   #42199
+rank_dat <- subset (newdat, newdat$surgyr_ == 6)    #14211 obs
+
+# obtain the observed mortality; 
+CrossTable (dat_var$mtopd_)
+obsrate=array()
+for(i in 1:90)
+{
+  obsrate[i]=sum(rank_dat$mtopd_[rank_dat$centerid==i])/length(rank_dat$centerid[rank_dat$centerid==i])
+}
+
+
+# cases numbers for ranking dat.
+obs =array()
+for(i in 1:90)
+{
+  obs[i]=length(rank_dat$centerid[rank_dat$centerid==i])
+}
+
+# cases numbers for develop dat.
+obs_dev =array()
+for(i in 1:90)
+{
+  obs_dev[i]=length(dev$centerid[dev$centerid==i])
+}
+
+###########################################
+######## 1. Indir_logit      ##############
+###########################################
+
+### step 1, obtain the risk factor estimates from OLS model without the hospital effect in development data; 
+model_mm_ols=glm(cbind(mtopd_,1-mtopd_) ~ age+hdef_4c+bsa4c+creatlst4c+
+                   dialysis_+arrhythmia_2cat+carshock_+gender_+
+                   immsupp_+pci_lt6h+iabp_inotrop+pvd_+angina_
+                 +vdinsufm2cat+
+                   chrlungd_ +cvd_cva+ diabctrl3cat+numdisv_+miwhen_+
+                   status_new+incidenc_+chf_nyh
+                 , dev,family = binomial(link = "logit"))
+summary (model_mm_ols)
+
+# assess model performance; 
+dev$predmtopd_ <- predict (model_mm_ols, dev, type= "response")
+dev$xbmort_ <- predict (model_mort, dev, type= "link")
+
+g <- roc(mtopd_ ~ predmtopd_, data = dev)  # c-stat=0.795
+hl <- hoslem.test(dev$mtopd_, dev$predmort_, g=10)
+
+
+# use ols model estimates 
+
+# ols indirect method 
+
+###Step 2: offset the ß from step 1, and fit the logistic model to data 2016, and obtain the intercept 
+# model covariates matrix for ranking data; 
+covar_rank<- model.matrix ( ~  age+hdef_4c+bsa4c+creatlst4c+
+                              dialysis_+arrhythmia_2cat+carshock_+gender_+
+                              immsupp_+pci_lt6h+iabp_inotrop+pvd_+angina_
+                            +vdinsufm2cat+
+                              chrlungd_ +cvd_cva+ diabctrl3cat+numdisv_+miwhen_+
+                              status_new+incidenc_+chf_nyh, data=rank_dat)
+est_ols=coef(model_mm_ols)  # ols estimates from ols model
+
+model_ols.rank=glm(cbind(mtopd_,1-mtopd_) ~ offset(as.matrix (covar_rank [, 2:36])  %*% as.matrix(est_ols[2:36])), rank_dat,family = binomial(link = "logit"))
+
+b=predict(model_ols.rank, rank_dat, type = "response")
+b = as.numeric (b)
+g <- roc(mtopd_ ~ b, data = rank_dat)
+plot(g)
+
+summary(model_ols.rank)
+
+###Step 3: calculate hospital indirect standardized rates using Observed to expected rate (O/E): 
+# calcaulate probability for each pt in rank data from ols model; 
+v_ols=offset(as.matrix (covar_rank [, 2:36])  %*% as.matrix(est_ols[2:36])) +coef(model_ols.rank)
+pred_ols=exp(v_ols)/(1+exp(v_ols))   # predicted probability from ols model
+
+predict_dat=cbind(rank_dat,pred_ols)
+
+
+# calculate expected rate from OLS model; 
+exprate_ols=array()
+for(i in 1:90)
+{
+  exprate_ols[i]=sum(predict_dat$pred_ols[predict_dat$centerid==i])/length(predict_dat$pred_ols[predict_dat$centerid==i])
+}
+exprate_ols     
+# O/E ratio ; 
+oe_ratio_ols=obsrate/exprate_ols
+
+# indirect rate: O/E ratio* overall ; 
+adjrate_ols_indir=(obsrate/exprate_ols)*sum(predict_dat$mtopd_)/nrow(predict_dat)
+
+
+# OE 95CL, wald method
+
+se_ols=array()
+for(i in 1:90)
+{
+  se_ols[i]= sqrt ( sum(predict_dat$pred_ols[predict_dat$centerid==i] * (1-predict_dat$pred_ols[predict_dat$centerid==i] )))/(sum(predict_dat$pred_ols[predict_dat$centerid==i]))
+}
+
+
+# output results for OLS indirect method; 
+dat_rate <- data.frame( cbind (centerid=1:90, obs,  obsrate, oe_ratio_ols, exprate_ols, adjrate_ols_indir))
+
+write.csv(dat_rate, file = "S:/CardiacSurg/Restricted/MSTCVS/Ting MSTCVS/Improve data/improve projects 050819/ranking/summary/sts_mortality outcome/ols_mtopd_112119.csv")
+
+
+###########################################
+######## 2. Indir_fixed      ##############
+###########################################
+
+###Step 1. Obtain the patients covariates coefficients from fixed effect models, adjusted for patient covariates and 
+#accounted for hospital fixed effects, using 2014-2016 data
+# fix effect model; 
+dev$centerid<- as.factor (dev$centerid)
+
+dev$surgyr_<- as.numeric (dev$surgyr_)
+
+model_mm_fix=glm(cbind(mtopd_,1-mtopd_) ~ age+hdef_4c+bsa4c+creatlst4c+
+                   dialysis_+arrhythmia_2cat+carshock_+gender_+
+                   immsupp_+pci_lt6h+iabp_inotrop+pvd_+angina_
+                 +vdinsufm2cat+
+                   chrlungd_ +cvd_cva+ diabctrl3cat+numdisv_+miwhen_+
+                   status_new+incidenc_+chf_nyh+centerid
+                 , dev,family = binomial(link = "logit"))
+summary (model_mm_fix)
+
+
+
+b=predict(model_mm_fix, dev, type = "response")
+g <- roc(mtopd_ ~ b, data = dev)
+plot(g)
+
+hoslem.test(dev$cppneum, fitted(model_fix))  #p-value = 0.02
+
+###Step 2. offset the ß from step 1, and fit the fixed effect model to data 2016, and obtain the intercept a_2016 and hospital effect in 2016 
+#### indirect standardized 
+#reference coding
+
+#use median hospital effect for the expected 
+
+est_model_fix <- coef (model_mm_fix)
+
+# obtain rank data hospital effect 
+model_fix_rank_hosp=glm (cbind(mtopd_,1-mtopd_)~ as.factor(centerid) + offset(as.matrix (covar_rank [, 2:36])  %*%as.matrix(est_model_fix[2:36])),rank_dat,family = binomial(link = "logit") ) 
+
+summary (model_fix_rank_hosp)
+
+predict_dat$pred_fix <- predict(model_fix_rank_hosp,rank_dat,type="response")
+
+est_model_fix_hosp.rank <- coef (model_fix_rank_hosp)
+
+b=predict(model_fix_rank_hosp, rank_dat, type = "response")
+b = as.numeric(b)
+g <- roc(mtopd_ ~ b, data = rank_dat)
+
+###Step 3. calculate hospital indirect standardized rates using Observed to expected rate (O/E):  
+#### indirect standardized 
+#reference coding
+
+#use median hospital effect for the expected 
+medeffect_ref.rank=median(c(est_model_fix_hosp.rank[2:90],0), na.rm=TRUE)
+
+# calculate fixed effect probability for each pt given the median hospital effect  
+pred_fix_ref_med=array()
+v_fix_ref_med=as.matrix (covar_rank [, 2:36]) %*%as.matrix(est_model_fix[2:36])+medeffect_ref.rank+est_model_fix_hosp.rank[1]
+pred_fix_ref_med=exp(v_fix_ref_med)/(1+exp(v_fix_ref_med))
+
+
+predict_dat=cbind(predict_dat,pred_fix_ref_med)
+
+#calculate the expected rate from fixed effect model; 
+exprate_fix_ref_med=array()
+for(i in 1:90)
+{
+  exprate_fix_ref_med[i]=sum(predict_dat$pred_fix_ref_med[predict_dat$centerid==i] )/length(predict_dat$pred_fix_ref_med[predict_dat$centerid==i])
+}
+
+exprate_fix_ref_med 
+
+# O/E ratio given fixed effect; 
+oe_ratio_fix=obsrate/exprate_fix_ref_med
+
+adjrate_fix_ref_med_indir=(obsrate/exprate_fix_ref_med)*(sum(predict_dat$mtopd_)/nrow(predict_dat))
+
+###########################################
+#########4.Dir_fixed      ##############
+###########################################
+
+### Step 1 and step 2 are the same in Indir_fixed method
+
+### Step 3. Calculate the direct standardized rates using all patients (N from all hospitals) as the reference
+# direct standardized
+
+# direct method
+
+exprate_fix_dir=array()
+for(centerid in 1:90)
+{
+  if(centerid ==1)
+  {
+    pred3.1=array()
+    v=as.matrix (covar_rank [, 2:36]) %*%as.matrix(est_model_fix[2:36])+est_model_fix_hosp.rank[1]
+    pred3.1=exp(v)/(1+exp(v))
+    exprate_fix_dir[1]=sum(pred3.1)/nrow(predict_dat)
+  }
+  if(centerid !=1)
+  {
+    pred3.1=array()
+    v=as.matrix (covar_rank [, 2:36]) %*%as.matrix(est_model_fix[2:36]) +est_model_fix_hosp.rank[centerid]+est_model_fix_hosp.rank[1]
+    pred3.1=exp(v)/(1+exp(v))
+    exprate_fix_dir[centerid]=sum(pred3.1)/nrow(predict_dat)
+  }
+}
+
+exprate_fix_dir
+
+dat_rate_fix <- data.frame( cbind (centerid=1:90, obs,  obsrate, exprate_fix_ref_med,oe_ratio_fix, adjrate_fix_ref_med_indir,exprate_fix_dir))
+
+
+write.csv(dat_rate_fix, file = "S:/CardiacSurg/Restricted/MSTCVS/Ting MSTCVS/Improve data/improve projects 050819/ranking/summary/sts_mortality outcome/fixef_mtopd_112119.csv")
+
+###########################################
+##########3. Indir_random      ##############
+###########################################
+
+#Step 1: Random effects models, adjusted for patient covariates and accounted for hospital random effects with empirical Bayes estimates.
+# random effect 
+# scale the variable to enable model convergence
+scale_var = c("age")
+dfs <- dev
+dfs[,scale_var] <- scale(dev[,scale_var])
+
+library (lme4)
+
+model_mm_random <- glmer(cbind(mtopd_,1-mtopd_) ~ age+hdef_4c+bsa4c+creatlst4c+
+                        dialysis_+arrhythmia_2cat+carshock_+gender_+
+                        immsupp_+pci_lt6h+iabp_inotrop+pvd_+angina_
+                      +vdinsufm2cat+
+                        chrlungd_ +cvd_cva+ diabctrl3cat+numdisv_+miwhen_+
+                        status_new+incidenc_+chf_nyh+(1|centerid) ,data=dfs,family = binomial(link = "logit"),
+                      nAGQ = 2, control=glmerControl(optimizer="bobyqa", 
+                                                     optCtrl=list(maxfun=2e5)))
+
+
+
+summary (model_mm_random)
+
+b=predict(model_mm_random, dfs, type = "response")
+b = as.numeric (b)
+g <- roc(mtopd_ ~ b, data = dfs)
+
+
+
+# predict individual exclude random effect; 
+
+scale_var = c("age")
+dfs_rank <- rank_dat
+dfs_rank[,scale_var] <- scale(dfs_rank[,scale_var])
+
+covar_rank_dfs<- model.matrix ( ~ age+hdef_4c+bsa4c+creatlst4c+
+                                  dialysis_+arrhythmia_2cat+carshock_+gender_+
+                                  immsupp_+pci_lt6h+iabp_inotrop+pvd_+angina_
+                                +vdinsufm2cat+
+                                  chrlungd_ +cvd_cva+ diabctrl3cat+numdisv_+miwhen_+
+                                  status_new+incidenc_+chf_nyh, data=dfs_rank)
+
+
+###Step 2. offset the ß from step 1, and fit the random effect model to data 2016, and obtain the intercept a_2016 and hospital random intercepts ?_2016j for hospital random effect in 2016. 
+
+
+# estimate the hospital effect for ranking data;  
+est_fixef_ran <- fixef (model_mm_random)
+
+model_ran_rank_hosp=glmer (cbind(mtopd_,1-mtopd_)~ (1|centerid) + offset(as.matrix (covar_rank_dfs [, 2:36])  %*%as.matrix(est_fixef_ran[2:36])),
+                           dfs_rank,family = binomial(link = "logit"), 
+                           nAGQ = 2, control=glmerControl(optimizer="bobyqa", 
+                                                          optCtrl=list(maxfun=2e5))) 
+
+est_fixef_ran_intercept <- fixef(model_ran_rank_hosp)
+
+model_ran_rank_hosp_ranef <- as.data.frame (ranef(model_ran_rank_hosp, condVar=TRUE))
+
+summary (model_ran_rank_hosp)
+b=predict(model_ran_rank_hosp, dfs_rank, type = "response")
+b = as.numeric (b)
+g <- roc(mtopd_ ~ b, data = dfs_rank)
+str(rr1 <- ranef(model_ran_rank_hosp))
+dotplot(rr1) ## default
+
+
+
+
+### Step 3.calculate hospital indirect standardized rates using predicted to expected rate (P/E):  
+
+# predict individual probability given random effect model; 
+# exclude random effect;
+p_ran_no <- predict(model_ran_rank_hosp,dfs_rank, re.form=NA, type="response")  
+# include random effect 
+p_ran_re <- predict(model_ran_rank_hosp,dfs_rank,  type="response")    # new data, all RE
+
+
+predict_dat=cbind(predict_dat,p_ran_no,p_ran_re )
+
+
+# calculate center level expected rate; 
+exprate_ran=array()
+for(i in 1:90)
+{
+  exprate_ran[i]=sum(predict_dat$p_ran_no[predict_dat$centerid==i] )/length(predict_dat$p_ran_no[predict_dat$centerid==i])
+}
+
+# calculate center level predicted rate
+exprate_ran_re=array()
+for(i in 1:90)
+{
+  exprate_ran_re[i]=sum(predict_dat$p_ran_re[predict_dat$centerid==i] )/length(predict_dat$p_ran_re[predict_dat$centerid==i])
+}
+
+
+
+# for each center calculate  (P/E)*overall rate
+adjrate_ran_pe_indir=array()
+for(i in 1:90)
+{adjrate_ran_pe_indir[i]=(exprate_ran_re[i]/exprate_ran[i])*(sum(predict_dat$mtopd_)/nrow(predict_dat))
+}
+# P/Efor each center
+
+
+pe_ratio_random=array()
+for(i in 1:90)
+{pe_ratio_random[i]=exprate_ran_re[i]/exprate_ran[i]
+}
+
+#########################
+#boot_strap for random effect PE ratios.
+##############
+
+final_dat = NULL
+
+for (i in 1:1000)
+{
+  # sample I hospital with replacement
+  
+  ids <- sample(dfs_rank$centerid, 90, replace = TRUE)
+  
+  # treat each hospital as distinct in the hospital samples and assign boot_centerid
+  
+  boot_centerid_dat=data.frame (cbind(centerid=ids, boot_centerid=1:90))
+  
+  ## select data based on hospital id
+  # verify with the data that centerid if selected multiple times, the pt data was selected multiple times, it seems
+  #data A one row is matching with all the other rows in data B; 
+  
+  
+  # many to many merge; 
+  dat_boot <- merge (boot_centerid_dat, dfs_rank, by="centerid", all.x=TRUE)
+  
+  # sort data boot by centerid; 
+  dat_boot <- dat_boot[order(dat_boot$boot_centerid),]      ### need to double check!
+  
+  # dat_boot is the bootsample; 
+  
+  # variable from boot sample
+  covar_boot<- model.matrix ( ~ age+hdef_4c+bsa4c+creatlst4c+
+                                dialysis_+arrhythmia_2cat+carshock_+gender_+
+                                immsupp_+pci_lt6h+iabp_inotrop+pvd_+angina_
+                              +vdinsufm2cat+
+                                chrlungd_ +cvd_cva+ diabctrl3cat+numdisv_+miwhen_+
+                                status_new+incidenc_+chf_nyh, data=dat_boot)
+  # model using bootsample
+  model_boot1=glmer (cbind(mtopd_,1-mtopd_)~ (1|boot_centerid) + offset(as.matrix (covar_boot [, 2:36])  %*%as.matrix(est_fixef_ran[2:36])),
+                     dat_boot,family = binomial(link = "logit"), 
+                     nAGQ = 2, control=glmerControl(optimizer="bobyqa", 
+                                                    optCtrl=list(maxfun=2e5))) 
+  
+  # extract the fixed intercept in this model;
+  est_fixef_boot_intercept <- fixef(model_boot1)
+  # random effect from boot sample 
+  model_ran_boot <- ranef(model_boot1)
+  
+  ranef_df <- as.data.frame(model_ran_boot)# select estimates based on boot sample results
+  
+  # select a random effect for hospitals based on posterior distribution 
+  ranef_est=array()
+  for(i in 1:90)
+  {ranef_est[i]=rnorm(1, mean=as.numeric (ranef_df$condval[i]), sd=as.numeric (ranef_df$condsd[i]))
+  }
+  
+  # matching the ranef_est with boot_centerid; 
+  df_ranef_est <- cbind.data.frame(boot_centerid_dat, ranef_est)
+  
+  
+  ## then use this bootstrapping df_ranef_est for futher calculation 
+  
+  # prediciton exclude  bootstrapping random effect for each pt , only the fixed effect parts; 
+  # the logit scale;
+  v_no_re=(as.matrix (covar_boot [, 2:36]) %*%as.matrix(est_fixef_ran[2:36]))+est_fixef_boot_intercept
+  # the prediction scale; 
+  pred_boot_nore=exp(v_no_re)/(1+exp(v_no_re))
+  
+  # combine the fixed effect parts to the original pt dataset; 
+  dat_boot <- cbind (dat_boot, v_no_re,pred_boot_nore)
+  
+  
+  # individual prediction including hospital random effect, the P. 
+  
+  dat_boot2 <- merge (dat_boot,df_ranef_est, by="boot_centerid" )
+  
+  # combine the random effect with no-random effect part to calculate the individual probability; 
+  pred_boot_re=array()
+  {   
+    v_re=dat_boot2$v_no_re +dat_boot2$ranef_est
+    pred_boot_re=exp(v_re)/(1+exp(v_re))
+  }
+  
+  
+  # calculate P/E ratios
+  
+  dat_boot3 <- cbind (dat_boot2, pred_boot_re)
+  
+  pe_i=array()
+  for(i in 1:90)
+  {
+    pe_i[i]=sum(dat_boot3$pred_boot_re[dat_boot3$boot_centerid==i] )/sum(dat_boot3$pred_boot_nore[dat_boot3$boot_centerid==i] )
+  }
+  
+  
+  
+  boot_center <- as.data.frame (cbind (boot_centerid_dat, pe_i))
+  
+  
+  # select unique set of centerid 
+  boot_center_uni<-  boot_center[!duplicated(boot_center$centerid), ]
+  
+  
+  # combine dataset for each bootstrapping step; 
+  final_dat = rbind(final_dat, boot_center_uni)
+  
+}
+
+write.csv(final_dat, file = "S:/CardiacSurg/Restricted/MSTCVS/Ting MSTCVS/Improve data/improve projects 050819/ranking/summary/sts_mortality outcome/ranboot_mtopd_112119.csv")
+
+
+
+# derive the distribution of the bootstrapping estimates; 
+mean.pe = aggregate(final_dat[,3],list(final_dat$centerid),mean)
+std.pe = aggregate(final_dat[,3],list(final_dat$centerid),sd)
+pe05=aggregate(final_dat[,3],list(final_dat$centerid), FUN = quantile, probs  = 0.025)
+pe95=aggregate(final_dat[,3],list(final_dat$centerid), FUN = quantile, probs  = 0.975)
+
+
+
+# combine the boot sample result
+Boot_sum <- cbind (centerid=mean.pe[,1],mean.pe=mean.pe[,2],std.pe=std.pe[,2],pe05=pe05[,2], pe95=pe95[,2] )
+
+# merge with the data with all raw observation rate in center level; 
+boot_ci_ran <- merge (ran_raw, Boot_sum, by ="centerid")
+
+# calculate the basic bootstrapping CI; 
+boot_ci_ran$pe_ran_cilow=boot_ci_ran$raw_pe_ratio_random- (boot_ci_ran$pe95-boot_ci_ran$raw_pe_ratio_random)
+boot_ci_ran$pe_ran_ciup=boot_ci_ran$raw_pe_ratio_random- (boot_ci_ran$pe05-boot_ci_ran$raw_pe_ratio_random)
+
+###########################################
+##########5. Dir_random      ##############
+###########################################
+
+
+### Step 1 and Step2 are the same as Indir_random
+### Step 3.Calculate the direct standardized rates using all patients (N from all hospitals) as the reference. 
+
+# direct method
+exprate_ran_dir=array()
+for(centerid in 1:90)
+{
+  pred3.1=array()
+  v=as.matrix (covar_rank_dfs [, 2:36]) %*%as.matrix(est_fixef_ran[2:36]) +est_fixef_ran_intercept[1] + model_ran_rank_hosp_ranef$condval[centerid]
+  pred3.1=exp(v)/(1+exp(v))
+  exprate_ran_dir[centerid]=sum(pred3.1)/nrow(dfs_rank)
+}
+exprate_ran_dir
+
+ran_dir <- data.frame (exprate_ran_dir)
+
+dat_rate_random <- as.data.frame(cbind (centerid=1:90,obs, obsrate,exprate_ran, exprate_ran_re, adjrate_ran_oe_indir, adjrate_ran_pe_indir,  oe_ratio_random, se_ran, pe_ratio_random, 
+                                        exprate_ran_dir))
+
+
+write.csv(dat_rate_random, file = "S:/CardiacSurg/Restricted/MSTCVS/Ting MSTCVS/Improve data/improve projects 050819/ranking/summary/sts_mortality outcome/ranef_mtopd_112119.csv")
+
+
+##############################
+# 6. sts bayesian method######
+##############################
+
+# provider specific average risk in probablity scale
+p_j=array()
+for(j in 1:90)
+{
+  p_j[j]= mean (predict_dat$pred_ols[predict_dat$centerid==j])
+}
+
+# log odds of the pr scale 
+z_j=array()
+for(j in 1:90)
+{
+  z_j[j]=log(mean (predict_dat$pred_ols[predict_dat$centerid==j])/(1-(mean (predict_dat$pred_ols[predict_dat$centerid==j]))))
+}
+
+center_dat  <-as.data.frame (cbind(centerid=1:90, z_j, p_j))
+mean_zj=mean (center_dat$z_j)
+
+# construct the data that includes the mean log odds for each hospital 
+center_dat_pred <- as.data.frame (center_dat$centerid)
+center_dat_pred$z_j=mean_zj
+center_dat_pred  <-data.frame(z_j=mean_zj, centerid=1:90, obs )
+
+obs_event=array()
+for(i in 1:90)
+{
+  obs_event[i]=sum(rank_dat$mtopd_[rank_dat$centerid==i])
+} 
+
+
+# theta_j is the odds 
+theta_j =array()
+for(j in 1:90)
+{
+  theta_j[j]=(obsrate[j]/ (1-obsrate[j]))
+}
+
+center_dat <- as.data.frame (cbind(center_dat,obsrate,obs_event, obs))
+library ("brms")
+# final prior specification. #################################
+prior2 <- c(
+  prior(normal(1,1), class = b, coef = z_j),
+  prior(normal(0,10000), class = Intercept),
+  prior (cauchy(0.1, 10000), class=sd))
+
+
+bayes_full2 = brm( obs_event|trials(obs) ~ z_j +(1|centerid), 
+                   data = center_dat,
+                   family = binomial (link='probit'),
+                   prior=prior2 , 
+                   seed = 1234,
+                   iter = 1000,
+                   thin = 1)
+
+summary (bayes_full2)
+# check convergence of bayesian model; 
+plot(bayes_full2, ask = FALSE)
+loo_compare(bayes_full2 , bayes_full)
+
+loo(bayes_full2)
+pp_check(bayes_full2)
+
+pred_logit2 <- as.data.frame( predict(bayes_full2, newdata =center_dat_pred ))
+
+
+### calculate clopper pearson CI for O/E ratio
+## first construct a dataset for center level, observed number of events and expected number of events ,and observations in each center;
+# this dataset is named calCI here; using desctools package to obtain the CI
+
+library (DescTools)
+
+calCI <- read.csv("calculateCI.csv" ,header=T,sep=',')
+BinomCI(x=calCI$mm.Observed , n=calCI$obs, method="clopper-pearson")
+
